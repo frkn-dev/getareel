@@ -1,0 +1,14 @@
+[package]
+name = "getareel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.7", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["stream", "json"] }
+regex = "1"
+serde = { version = "1.0", features = ["derive"] }
+http = "1.0" # Используем актуальную версию http
+futures-util = "0.3"
+tokio-util = "0.7"
