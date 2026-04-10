@@ -30,69 +30,114 @@ async fn main() {
 async fn index() -> Html<&'static str> {
     Html(
         r#"
-        <html>
-            <head>
-                <title>Рилзокачалка</title>
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-                    body { font-family: 'Inter', sans-serif; text-align:center; padding:100px; background:#fafafa; margin:0; }
-                    .card { max-width:500px; margin:0 auto; background:white; padding:40px; border-radius:15px; box-shadow:0 4px 15px rgba(0,0,0,0.1); }
-                    h1 { color:#333; margin-bottom: 10px; }
-                    p.subtitle { color:#666; margin-bottom: 25px; }
-                    input { width:100%; padding:12px; margin-bottom:20px; border:1px solid #ddd; border-radius:8px; box-sizing: border-box; }
-                    button { width:100%; padding:12px; background:#007bff; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold; transition: background 0.2s; }
-                    button:hover { background: #0056b3; }
+    <html>
+        <head>
+            <title>Рилзокачка</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
 
-                    /* Стили для подписи FRKN */
-                    .brand-footer {
-                        margin-top: 25px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        gap: 6px;
-                        color: #999;
-                        font-size: 12px;
-                        font-family: 'Monaco', 'Consolas', monospace;
-                        letter-spacing: 1px;
-                    }
-                    .brand-logo {
-                        width: 16px;
-                        height: 16px;
-                        fill: #007bff;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="card">
-                    <h1>Рилзокачалка</h1>
-                    <p class="subtitle">Вставь ссылку на рилзик</p>
+                body {
+                    font-family: 'Inter', sans-serif;
+                    text-align: center;
+                    background: #fafafa;
+                    margin: 0;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh; /* Центрируем по вертикали */
+                    padding: 20px; /* Чтобы на мобилках не касалось краев */
+                    box-sizing: border-box;
+                }
 
-                    <input type="text" id="url" placeholder="https://www.instagram.com/reel/..." autofocus>
+                .card {
+                    width: 100%;
+                    max-width: 450px;
+                    background: white;
+                    padding: 30px;
+                    border-radius: 20px;
+                    box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+                }
 
-                    <button onclick="go()">Скачать Video</button>
+                h1 { color:#333; margin-top: 0; font-size: 24px; }
+                p.subtitle { color:#666; margin-bottom: 25px; font-size: 16px; }
 
-                    <div class="brand-footer">
-                        <span>by</span>
-                        <svg class="brand-logo" viewBox="0 0 24 24">
-                            <path d="M13 10V3L4 14h7v7l9-11h-7z"/> </svg>
-                        <strong><a href="https://frkn.org">frkn</a></strong>
-                    </div>
+                input {
+                    width: 100%;
+                    padding: 15px;
+                    margin-bottom: 20px;
+                    border: 1px solid #eee;
+                    border-radius: 12px;
+                    font-size: 16px; /* Важно: 16px предотвращает зум на iPhone при клике */
+                    box-sizing: border-box;
+                    background: #fdfdfd;
+                    -webkit-appearance: none; /* Убираем стандартные тени iOS */
+                }
+
+                button {
+                    width: 100%;
+                    padding: 15px;
+                    background: #007bff;
+                    color: white;
+                    border: none;
+                    border-radius: 12px;
+                    cursor: pointer;
+                    font-weight: bold;
+                    font-size: 16px;
+                    transition: all 0.2s;
+                    -webkit-tap-highlight-color: transparent;
+                }
+
+                button:active { transform: scale(0.98); opacity: 0.9; }
+
+                .brand-footer {
+                    margin-top: 30px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 6px;
+                    color: #bbb;
+                    font-size: 11px;
+                    font-family: 'Monaco', 'Consolas', monospace;
+                    letter-spacing: 1px;
+                }
+
+                .brand-logo { width: 14px; height: 14px; fill: #007bff; }
+                .brand-footer a { color: inherit; text-decoration: none; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+                <h1>Рилзокачка</h1>
+                <p class="subtitle">Вставь ссылку на рилзик</p>
+
+                <input type="text" id="url" placeholder="https://www.instagram.com/reel/..." autofocus>
+
+                <button onclick="go()">Скачать Video</button>
+
+                <div class="brand-footer">
+                    <span>by</span>
+                    <svg class="brand-logo" viewBox="0 0 24 24">
+                        <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                    <strong><a href="https://frkn.org">frkn</a></strong>
                 </div>
+            </div>
 
-                <script>
-                    function go() {
-                        const val = document.getElementById('url').value;
-                        if(val) {
-                            const btn = document.querySelector('button');
-                            btn.innerText = 'Качаю...';
-                            btn.style.opacity = '0.7';
-                            window.location.href='/download?url='+encodeURIComponent(val.trim());
-                        }
+            <script>
+                function go() {
+                    const val = document.getElementById('url').value;
+                    if(val) {
+                        const btn = document.querySelector('button');
+                        btn.innerText = 'Качаю...';
+                        btn.disabled = true; // Чтобы не тыкали по сто раз
+                        window.location.href='/download?url='+encodeURIComponent(val.trim());
                     }
-                </script>
-            </body>
-        </html>
-        "#,
+                }
+            </script>
+        </body>
+    </html>
+    "#,
     )
 }
 
