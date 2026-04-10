@@ -102,19 +102,21 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
         _ => return (StatusCode::BAD_REQUEST, "Invalid or missing URL").into_response(),
     };
 
-    println!("📥 Downloading: {}", url);
-
-    // 👇 уникальный файл
     let id = Uuid::new_v4();
     let file_path = format!("/tmp/reel-{}.mp4", id);
 
-    // 👇 скачиваем
+    let cookies_path = "cookies.txt";
+
+    println!("📥 Downloading: {} with cookies {}", url, cookies_path);
+
     let status = match Command::new("yt-dlp")
         .arg("-f")
         .arg("mp4")
         .arg("--no-part")
         .arg("--quiet")
         .arg("--no-warnings")
+        .arg("--cookies")
+        .arg(cookies_path)
         .arg("-o")
         .arg(&file_path)
         .arg(url)
@@ -137,7 +139,6 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
         return (StatusCode::INTERNAL_SERVER_ERROR, "Download failed").into_response();
     }
 
-    // 👇 открываем файл
     let file = match File::open(&file_path).await {
         Ok(f) => f,
         Err(e) => {
@@ -149,10 +150,8 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    // 👇 удаляем файл в фоне после отдачи
     let path_clone = file_path.clone();
     tokio::spawn(async move {
-        // даём время на отдачу
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         let _ = tokio::fs::remove_file(path_clone).await;
     });
