@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use http::StatusCode;
+use regex::Regex;
 use std::collections::HashMap;
 use tokio::{fs::File, process::Command};
 use tokio_util::io::ReaderStream;
@@ -172,6 +173,8 @@ async fn run_yt_dlp(
 ) -> Result<std::process::ExitStatus, std::io::Error> {
     let mut cmd = Command::new("yt-dlp");
     cmd.arg("-f")
+        .arg("bestvideo*+bestaudio/best")
+        .arg("--merge-output-format")
         .arg("mp4")
         .arg("--no-part")
         .arg("--quiet")
@@ -187,9 +190,18 @@ async fn run_yt_dlp(
     cmd.status().await
 }
 
+fn normalize_url(url: &str) -> String {
+    // X / Twitter: https://x.com/user/status/123/video/1 → https://x.com/user/status/123
+    let x_re = Regex::new(r"(?i)^(https?://(?:x|twitter)\.com/[^/]+/status/\d+)(?:/video/\d+)?").unwrap();
+    if let Some(caps) = x_re.captures(url) {
+        return caps.get(1).unwrap().as_str().to_string();
+    }
+    url.to_string()
+}
+
 async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl IntoResponse {
     let url = match params.get("url") {
-        Some(u) if u.starts_with("http://") || u.starts_with("https://") => u,
+        Some(u) if u.starts_with("http://") || u.starts_with("https://") => normalize_url(u),
         _ => return (StatusCode::BAD_REQUEST, "Invalid or missing URL").into_response(),
     };
 
@@ -199,7 +211,7 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
 
     // Попытка 1: без куки (для публичного контента).
     println!("📥 Attempt 1 (no cookies): {}", url);
-    let status = match run_yt_dlp(url, &file_path, None).await {
+    let status = match run_yt_dlp(&url, &file_path, None).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("❌ Failed to start yt-dlp: {}", e);
@@ -217,7 +229,7 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
         let _ = tokio::fs::remove_file(&file_path).await;
 
         println!("📥 Attempt 2 (with cookies): {}", url);
-        let status = match run_yt_dlp(url, &file_path, Some(cookies_path)).await {
+        let status = match run_yt_dlp(&url, &file_path, Some(cookies_path)).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("❌ Failed to start yt-dlp: {}", e);
