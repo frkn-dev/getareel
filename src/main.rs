@@ -1,10 +1,10 @@
 use axum::response::Html;
 use axum::routing::get;
 use axum::{
-    Router,
     body::Body,
     extract::Query as AxQuery,
     response::{IntoResponse, Response},
+    Router,
 };
 use http::StatusCode;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
-    println!("\n🚀 FRKN Rust Downloader запущен!");
+    println!("\n🚀 FRKN Рилзокачка запущена!");
     println!("🌍 Адрес: http://127.0.0.1:3000\n");
 
     axum::serve(listener, app).await.unwrap();
@@ -109,9 +109,9 @@ async fn index() -> Html<&'static str> {
         <body>
             <div class="card">
                 <h1>Рилзокачка</h1>
-                <p class="subtitle">Вставь ссылку на рилзик</p>
+                <p class="subtitle">TikTok · X · YouTube · VK и ещё куча всего</p>
 
-                <input type="text" id="url" placeholder="https://www.instagram.com/reel/..." autofocus>
+                <input type="text" id="url" placeholder="https://..." autofocus>
 
                 <button onclick="go()">Скачать Video</button>
 
@@ -125,13 +125,37 @@ async fn index() -> Html<&'static str> {
             </div>
 
             <script>
-                function go() {
-                    const val = document.getElementById('url').value;
-                    if(val) {
-                        const btn = document.querySelector('button');
-                        btn.innerText = 'Качаю...';
-                        btn.disabled = true; // Чтобы не тыкали по сто раз
-                        window.location.href='/download?url='+encodeURIComponent(val.trim());
+                async function go() {
+                    const input = document.getElementById('url');
+                    const val = input.value.trim();
+                    if (!val) return;
+
+                    const btn = document.querySelector('button');
+                    const originalText = btn.innerText;
+                    btn.innerText = 'Качаю...';
+                    btn.disabled = true;
+
+                    try {
+                        const resp = await fetch('/download?url=' + encodeURIComponent(val));
+                        if (!resp.ok) {
+                            const err = await resp.text();
+                            throw new Error(err || 'Ошибка ' + resp.status);
+                        }
+
+                        const blob = await resp.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'video.mp4';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        window.URL.revokeObjectURL(url);
+                    } catch (err) {
+                        alert('Не удалось скачать: ' + err.message);
+                    } finally {
+                        btn.innerText = originalText;
+                        btn.disabled = false;
                     }
                 }
             </script>
@@ -141,33 +165,41 @@ async fn index() -> Html<&'static str> {
     )
 }
 
-async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl IntoResponse {
-    let url = match params.get("url") {
-        Some(u) if u.contains("instagram.com") => u,
-        _ => return (StatusCode::BAD_REQUEST, "Invalid or missing URL").into_response(),
-    };
-
-    let id = Uuid::new_v4();
-    let file_path = format!("/tmp/reel-{}.mp4", id);
-
-    let cookies_path = "cookies.txt";
-
-    println!("📥 Downloading: {} with cookies {}", url, cookies_path);
-
-    let status = match Command::new("yt-dlp")
-        .arg("-f")
+async fn run_yt_dlp(
+    url: &str,
+    output: &str,
+    cookies: Option<&str>,
+) -> Result<std::process::ExitStatus, std::io::Error> {
+    let mut cmd = Command::new("yt-dlp");
+    cmd.arg("-f")
         .arg("mp4")
         .arg("--no-part")
         .arg("--quiet")
         .arg("--no-warnings")
-        .arg("--cookies")
-        .arg(cookies_path)
         .arg("-o")
-        .arg(&file_path)
-        .arg(url)
-        .status()
-        .await
-    {
+        .arg(output)
+        .arg(url);
+
+    if let Some(c) = cookies {
+        cmd.arg("--cookies").arg(c);
+    }
+
+    cmd.status().await
+}
+
+async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl IntoResponse {
+    let url = match params.get("url") {
+        Some(u) if u.starts_with("http://") || u.starts_with("https://") => u,
+        _ => return (StatusCode::BAD_REQUEST, "Invalid or missing URL").into_response(),
+    };
+
+    let id = Uuid::new_v4();
+    let file_path = format!("/tmp/video-{}.mp4", id);
+    let cookies_path = "cookies.txt";
+
+    // Попытка 1: без куки (для публичного контента).
+    println!("📥 Attempt 1 (no cookies): {}", url);
+    let status = match run_yt_dlp(url, &file_path, None).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("❌ Failed to start yt-dlp: {}", e);
@@ -179,9 +211,33 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
         }
     };
 
+    // Попытка 2: с куки, если первая не удалась.
     if !status.success() {
-        eprintln!("❌ yt-dlp failed");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Download failed").into_response();
+        eprintln!("⚠️ No-cookies attempt failed, trying with cookies...");
+        let _ = tokio::fs::remove_file(&file_path).await;
+
+        println!("📥 Attempt 2 (with cookies): {}", url);
+        let status = match run_yt_dlp(url, &file_path, Some(cookies_path)).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ Failed to start yt-dlp: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to start downloader",
+                )
+                    .into_response();
+            }
+        };
+
+        if !status.success() {
+            eprintln!("❌ yt-dlp failed with cookies too");
+            let _ = tokio::fs::remove_file(&file_path).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Не удалось скачать. Возможно, видео приватное, удалено или требует авторизации. Попробуйте обновить cookies.txt.",
+            )
+                .into_response();
+        }
     }
 
     let file = match File::open(&file_path).await {
@@ -204,7 +260,7 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "video/mp4")
-        .header("Content-Disposition", "attachment; filename=\"reels.mp4\"")
+        .header("Content-Disposition", "attachment; filename=\"video.mp4\"")
         .body(body)
         .unwrap()
         .into_response()

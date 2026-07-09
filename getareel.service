@@ -1,0 +1,12 @@
+[Unit]
+Description=Get A Reel Service
+
+[Service]
+Type=simple
+ExecStart=/opt/getareel/getareel
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/opt/getareel
+
+[Install]
+WantedBy=multi-user.target
