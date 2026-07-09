@@ -23,6 +23,8 @@ async fn main() {
         .await
         .unwrap();
     println!("\n🚀 FRKN Рилзокачка запущена!");
+    println!("\nVersion: 0.1.1");
+
     println!("🌍 Адрес: http://127.0.0.1:3000\n");
 
     axum::serve(listener, app).await.unwrap();
@@ -192,7 +194,8 @@ async fn run_yt_dlp(
 
 fn normalize_url(url: &str) -> String {
     // X / Twitter: https://x.com/user/status/123/video/1 → https://x.com/user/status/123
-    let x_re = Regex::new(r"(?i)^(https?://(?:x|twitter)\.com/[^/]+/status/\d+)(?:/video/\d+)?").unwrap();
+    let x_re =
+        Regex::new(r"(?i)^(https?://(?:x|twitter)\.com/[^/]+/status/\d+)(?:/video/\d+)?").unwrap();
     if let Some(caps) = x_re.captures(url) {
         return caps.get(1).unwrap().as_str().to_string();
     }
