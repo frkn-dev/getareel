@@ -19,7 +19,9 @@ async fn main() {
         .route("/", get(index))
         .route("/download", get(download));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let bind_addr = std::env::var("GETAREEL_BIND").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .unwrap();
     println!("\n🚀 FRKN Рилзокачка запущена!");
@@ -33,7 +35,7 @@ async fn main() {
         _ => println!("yt-dlp version: unknown"),
     }
 
-    println!("🌍 Адрес: http://127.0.0.1:3000\n");
+    println!("🌍 Адрес: http://{}\n", bind_addr);
 
     axum::serve(listener, app).await.unwrap();
 }
