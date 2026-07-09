@@ -23,7 +23,15 @@ async fn main() {
         .await
         .unwrap();
     println!("\n🚀 FRKN Рилзокачка запущена!");
-    println!("\nVersion: 0.1.1");
+    println!("Version: 0.1.1");
+
+    match Command::new("/usr/local/bin/yt-dlp").arg("--version").output().await {
+        Ok(out) if out.status.success() => {
+            let ver = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            println!("yt-dlp version: {}", ver);
+        }
+        _ => println!("yt-dlp version: unknown"),
+    }
 
     println!("🌍 Адрес: http://127.0.0.1:3000\n");
 
@@ -173,9 +181,9 @@ async fn run_yt_dlp(
     output: &str,
     cookies: Option<&str>,
 ) -> Result<std::process::ExitStatus, std::io::Error> {
-    let mut cmd = Command::new("yt-dlp");
+    let mut cmd = Command::new("/usr/local/bin/yt-dlp");
     cmd.arg("-f")
-        .arg("bestvideo*+bestaudio/best")
+        .arg("bestvideo+bestaudio/best")
         .arg("--merge-output-format")
         .arg("mp4")
         .arg("--no-part")
