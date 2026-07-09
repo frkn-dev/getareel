@@ -3,6 +3,7 @@ Description=Get A Reel Service
 
 [Service]
 Type=simple
+Environment="GETAREEL_BIND=127.0.0.1:4000"
 ExecStart=/opt/getareel/getareel
 Restart=on-failure
 RestartSec=5
