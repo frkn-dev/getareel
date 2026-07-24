@@ -1,19 +1,29 @@
 use axum::response::Html;
 use axum::routing::get;
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::Query as AxQuery,
     response::{IntoResponse, Response},
     Router,
 };
+use futures_util::StreamExt;
 use http::StatusCode;
 use regex::Regex;
 use std::collections::HashMap;
 use std::process::Stdio;
-use tokio::io::AsyncReadExt;
-use tokio::{fs::File, process::Command};
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+use tokio::process::Command;
 use tokio_util::io::ReaderStream;
-use uuid::Uuid;
+
+const VERSION: &str = "0.1.3";
+
+// YouTube: прогрессивный mp4 до 720p — без мержа ffmpeg, начинает отдаваться сразу.
+const YT_FORMAT: &str = "best[ext=mp4][height<=720]/best[height<=720]/best[ext=mp4]/best";
+// Остальные сервисы: готовый mp4 любого качества, тоже стримится сразу.
+const OTHER_FORMAT: &str = "best[ext=mp4]/best";
+
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 #[tokio::main]
 async fn main() {
@@ -25,7 +35,7 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
     println!("\n🚀 FRKN Рилзокачка запущена!");
-    println!("Version: 0.1.2");
+    println!("Version: {}", VERSION);
 
     match Command::new("/usr/local/bin/yt-dlp")
         .arg("--version")
@@ -166,7 +176,7 @@ async fn index() -> Html<&'static str> {
                     <svg class="brand-logo" viewBox="0 0 24 24">
                         <path d="M13 10V3L4 14h7v7l9-11h-7z"/>
                     </svg>
-                    <strong><a href="https://frkn.org">frkn v0.1.2</a></strong>
+                    <strong><a href="https://frkn.org">frkn v0.1.3</a></strong>
                 </div>
             </div>
 
@@ -256,30 +266,6 @@ async fn index() -> Html<&'static str> {
     )
 }
 
-async fn run_yt_dlp(
-    url: &str,
-    output: &str,
-    cookies: Option<&str>,
-) -> Result<std::process::ExitStatus, std::io::Error> {
-    let mut cmd = Command::new("/usr/local/bin/yt-dlp");
-    cmd.arg("-f")
-        .arg("bestvideo+bestaudio/best")
-        .arg("--merge-output-format")
-        .arg("mp4")
-        .arg("--no-part")
-        .arg("--quiet")
-        .arg("--no-warnings")
-        .arg("-o")
-        .arg(output)
-        .arg(url);
-
-    if let Some(c) = cookies {
-        cmd.arg("--cookies").arg(c);
-    }
-
-    cmd.status().await
-}
-
 fn normalize_url(url: &str) -> String {
     // X / Twitter: https://x.com/user/status/123/video/1 → https://x.com/user/status/123
     let x_re =
@@ -294,22 +280,25 @@ fn is_youtube_url(url: &str) -> bool {
     url.contains("youtube.com") || url.contains("youtu.be") || url.contains("youtube-nocookie.com")
 }
 
-async fn stream_direct(url: &str) -> Response<Body> {
-    println!("📥 Streaming directly: {}", url);
-
+/// Запускает yt-dlp в stdout и ждёт первые байты (preflight).
+/// Если видео недоступно — возвращает None, чтобы можно было повторить с куками.
+/// Если всё ок — возвращает стримящий ответ, отдача начинается мгновенно.
+async fn try_stream(url: &str, format: &str, cookies: Option<&str>) -> Option<Response<Body>> {
     let mut cmd = Command::new("/usr/local/bin/yt-dlp");
     cmd.arg("-f")
-        .arg("best[ext=mp4]/best")
+        .arg(format)
         .arg("--no-part")
+        .arg("--no-playlist")
         .arg("--quiet")
         .arg("--no-warnings")
+        .arg("--user-agent")
+        .arg(USER_AGENT)
         .arg("-o")
         .arg("-")
         .arg(url);
 
-    let cookies_path = "cookies.txt";
-    if tokio::fs::metadata(cookies_path).await.is_ok() {
-        cmd.arg("--cookies").arg(cookies_path);
+    if let Some(c) = cookies {
+        cmd.arg("--cookies").arg(c);
     }
 
     cmd.stdout(Stdio::piped());
@@ -319,126 +308,62 @@ async fn stream_direct(url: &str) -> Response<Body> {
         Ok(c) => c,
         Err(e) => {
             eprintln!("❌ Failed to start yt-dlp: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to start downloader",
-            )
-                .into_response();
+            return None;
         }
     };
 
-    let stdout = child.stdout.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
 
-    tokio::spawn(async move {
-        let mut stderr_reader = tokio::io::BufReader::new(stderr);
-        let mut stderr_buf = String::new();
-        let _ = stderr_reader.read_to_string(&mut stderr_buf).await;
-
-        match child.wait().await {
-            Ok(status) if !status.success() => {
-                eprintln!("❌ yt-dlp stream failed: {}", stderr_buf.trim());
+    // Preflight: ждём первые байты до 20 секунд. Нет данных — считаем попытку неудачной.
+    let mut first = vec![0u8; 64 * 1024];
+    let n = match tokio::time::timeout(Duration::from_secs(20), stdout.read(&mut first)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => {
+            let _ = child.kill().await;
+            let mut stderr_reader = tokio::io::BufReader::new(stderr);
+            let mut stderr_buf = String::new();
+            let _ = stderr_reader.read_to_string(&mut stderr_buf).await;
+            let err = stderr_buf.trim();
+            if !err.is_empty() {
+                eprintln!("⚠️ yt-dlp preflight failed: {}", err);
             }
+            return None;
+        }
+    };
+    first.truncate(n);
+
+    // Дочитываем stderr и ждём завершения процесса в фоне.
+    tokio::spawn(async move {
+        let reader = tokio::io::BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.trim();
+            if !line.is_empty() {
+                eprintln!("ℹ️ yt-dlp: {}", line);
+            }
+        }
+        match child.wait().await {
+            Ok(status) if !status.success() => eprintln!("❌ yt-dlp exited with {}", status),
             Ok(_) => {}
             Err(e) => eprintln!("❌ Failed to wait for yt-dlp: {}", e),
         }
     });
 
-    let stream = ReaderStream::new(stdout);
+    let first = Bytes::from(first);
+    let stream = futures_util::stream::once(async move { Ok::<Bytes, std::io::Error>(first) })
+        .chain(ReaderStream::new(stdout).map(|r| r.map_err(|e| e)));
     let body = Body::from_stream(stream);
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "video/mp4")
-        .header("Content-Disposition", "attachment; filename=\"video.mp4\"")
-        .body(body)
-        .unwrap()
-        .into_response()
-}
-
-async fn download_youtube(url: &str) -> Response<Body> {
-    let id = Uuid::new_v4();
-    let file_path = format!("/tmp/video-{}.mp4", id);
-    let cookies_path = "cookies.txt";
-
-    // Попытка 1: без куки (для публичного контента).
-    println!("📥 Attempt 1 (no cookies): {}", url);
-    let status = match run_yt_dlp(url, &file_path, None).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ Failed to start yt-dlp: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to start downloader",
-            )
-                .into_response();
-        }
-    };
-
-    // Попытка 2: с куки, если первая не удалась.
-    if !status.success() {
-        eprintln!("⚠️ No-cookies attempt failed, trying with cookies...");
-        let _ = tokio::fs::remove_file(&file_path).await;
-
-        println!("📥 Attempt 2 (with cookies): {}", url);
-        let status = match run_yt_dlp(url, &file_path, Some(cookies_path)).await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("❌ Failed to start yt-dlp: {}", e);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to start downloader",
-                )
-                    .into_response();
-            }
-        };
-
-        if !status.success() {
-            eprintln!("❌ yt-dlp failed with cookies too");
-            let _ = tokio::fs::remove_file(&file_path).await;
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Не удалось скачать. Возможно, видео приватное, удалено или требует авторизации. Попробуйте обновить cookies.txt.",
-            )
-                .into_response();
-        }
-    }
-
-    let file = match File::open(&file_path).await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("❌ Failed to open file: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to read file").into_response();
-        }
-    };
-
-    let file_size = match file.metadata().await {
-        Ok(m) => Some(m.len()),
-        Err(e) => {
-            eprintln!("⚠️ Failed to get file metadata: {}", e);
-            None
-        }
-    };
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    let path_clone = file_path.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        let _ = tokio::fs::remove_file(path_clone).await;
-    });
-
-    let mut response = Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "video/mp4")
-        .header("Content-Disposition", "attachment; filename=\"video.mp4\"");
-
-    if let Some(size) = file_size {
-        response = response.header("Content-Length", size.to_string());
-    }
-
-    response.body(body).unwrap().into_response()
+    Some(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Disposition", "attachment; filename=\"video.mp4\"")
+            .body(body)
+            .unwrap()
+            .into_response(),
+    )
 }
 
 async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl IntoResponse {
@@ -447,9 +372,30 @@ async fn download(AxQuery(params): AxQuery<HashMap<String, String>>) -> impl Int
         _ => return (StatusCode::BAD_REQUEST, "Invalid or missing URL").into_response(),
     };
 
-    if is_youtube_url(&url) {
-        download_youtube(&url).await
+    let format = if is_youtube_url(&url) {
+        YT_FORMAT
     } else {
-        stream_direct(&url).await
+        OTHER_FORMAT
+    };
+
+    // Попытка 1: без куки (публичный контент — большинство случаев).
+    println!("📥 Attempt 1 (no cookies): {}", url);
+    if let Some(resp) = try_stream(&url, format, None).await {
+        return resp;
     }
+
+    // Попытка 2: с куки, если файл есть.
+    let cookies_path = "cookies.txt";
+    if tokio::fs::metadata(cookies_path).await.is_ok() {
+        println!("📥 Attempt 2 (with cookies): {}", url);
+        if let Some(resp) = try_stream(&url, format, Some(cookies_path)).await {
+            return resp;
+        }
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Не удалось скачать. Возможно, видео приватное, удалено или требует авторизации. Попробуйте обновить cookies.txt.",
+    )
+        .into_response()
 }
